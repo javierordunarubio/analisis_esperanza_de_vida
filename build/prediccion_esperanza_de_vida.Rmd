@@ -1,0 +1,1574 @@
+---
+title: "Predicción de la esperanza de vida"
+author: "Javier Orduña Rubio"
+date: "28/12/2021"
+output:
+  html_document:
+    echo: yes
+    number_sections: yes
+    theme: lumen
+    toc: yes
+  html_notebook:
+    echo: yes
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+language:
+  label:
+    fig: 'Figura '
+    tab: 'Tabla '
+    eq: 'Ecuación '
+    thm: 'Teorema '
+    lem: 'Lema '
+    def: 'Definición '
+    cor: 'Corolario '
+    prp: 'Proposición '
+    exm: 'Ejemplo '
+    exr: 'Ejercicio '
+    proof: 'Demostración. '
+    remark: 'Nota: '
+    solution: 'Solución. '
+---
+**Instalación de paquetes**
+
+Incluimos todas las librerías necesarias para la ejecucion del código en la lista *packages*. Si la librería no está instalada se instalará y cargará, sino solo se cargará.
+
+```{r}
+# Especificamos las librerías necesarias en esta lista
+
+packages = c("stats","knitr",'leaps','car','lmtest','dplyr','tidyr')
+
+#use this function to check if each package is on the local machine
+#if a package is installed, it will be loaded
+#if any are not, the missing package(s) will be installed and loaded
+package.check <- lapply(packages, FUN = function(x) {
+  if (!require(x, character.only = TRUE)) {
+    install.packages(x, dependencies = TRUE)
+    library(x, character.only = TRUE)
+  }
+})
+
+#verify they are loaded
+search()
+
+```
+
+# Parte 1
+
+## Carga de datos
+
+Cargamos los datos de *EV2014.RData*:
+
+```{r}
+load(file='../data/EV2014.RData')
+```
+
+Veamos la estructura de este dataframe:
+
+```{r}
+str(EV2014)
+```
+
+Todas las variables son del tipo de dato a esperar salvo la de Status, que distingue entre país en desarrollo (Developing) o desarrollado (Developed); esta variable debe ser modificada y que pase a ser un factor con dos niveles:
+
+```{r}
+EV2014$Status <- as.factor(EV2014$Status)
+#comprobamos que ya es un factor
+str(EV2014$Status)
+table(EV2014$Status)
+```
+
+## Análisis de las variables y decisiones acerca los datos faltantes
+
+### Análisis de las variables
+Una vez hemos cargado los datos, deberíamos plantearnos qué variables tiene sentido analizar con la esperanza de vida. Usaremos todas las variables a excepción de las siguientes: el año (Year), puesto que este es 2014 para todas las muestras ya que indica el año en el que están tomados los datos; el nombre de los países (Country), puesto que obviamente el cómo se llame cada país no va a afectar a la esperanza de vida de este;  el índice de desarrollo humano en términos de las fuentes de composición de los ingresos (Income.composition.of.resources), puesto que este está compuesto, según Wikipedia, *por la esperanza de vida, la educación (tasa de alfabetización, tasa bruta de matriculación en diferentes niveles y asistencia neta) e indicadores de ingreso per cápita.* Así, como está compuesto por la propia esperanza de vida, si lo usásemos para modelizar estaríamos ajustando con un predictor que ya sabe lo que se quiere predecir. Además de estas variables quitamos de nuestro ajuste a las variables Adult.Mortality e infant.deaths, puesto que, si en nuestro ajuste en el que queremos calcular la esperanza de vida introducimos la mortalidad tanto de niños como de adultos, estamos diciendo al ajuste directamente la edad a la que se muere la población, y con ello se puede calcular la esperanza de vida.
+
+Quitemos estas variables de nuestro ajuste, dejando la del país para tener claro a qué país nos estamos refiriendo:
+
+```{r}
+EV2014$Year <- NULL
+EV2014$Adult.Mortality<- NULL
+EV2014$infant.deaths <- NULL
+EV2014$Income.composition.of.resources <- NULL
+```
+
+### Decisiones acerca los datos faltantes
+
+Antes de empezar con el análisis de qué variables modelizan mejor a la variable de la esperanza de vida veamos qué variables tienen valores faltantes NA.
+
+```{r}
+variables <- names(EV2014)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2014[,name])),'\n')
+}
+```
+
+Observamos que las dos variables con diferencia con mayor número de datos faltantes son GDP y Population. En este punto nos planteamos qué hacer con estos datos faltantes de estas variables. Básicamente tenemos tres opciones: por un lado, imputarlos con un valor estimado de los valores conocidos; por otro lado, imputar con un valor estimado con un modelo predictivo; y, por último, borrar los datos, lo cual se puede utilizar cuando los datos faltantes son completamente aleatorios, y la muestra es muy grande. 
+
+En cuanto a la población (Population), si pensamos en que nuestro dataframe contiene una serie de países con diferentes datos de los mismos y que, a priori, no tienen relación entre sí, llegamos a la conclusión de que debemos borrar los datos faltantes, puesto que no podemos imputarlos ya que no tiene sentido relacionar las poblaciones de un país con el del resto. Si en nuestro dataframe tuviésemos algún dato con el que pudiésemos inferir algo de la población como, por ejemplo, el área de cada país, podríamos tratar de establecer una relación global entre la superficie y la población y de ahí inferir la población que falta, pero no es el caso. Una vez decidido que vamos a borrar los datos faltantes, nos planteamos cuántos datos estaríamos borrando si eliminamos las muestras que tienen NAs en Population, y queremos ver también qué países son:
+
+```{r}
+total_eliminados <- sum(is.na(EV2014$Population))
+porcentaje <- total_eliminados/nrow(EV2014)
+cat('El porcentaje de datos que eliminaríamos borrando las muestras con NA en Population es',porcentaje*100,'% \n')
+
+cat('Los países con datos faltantes en Population son: \n')
+EV2014$Country[is.na(EV2014$Population)]
+```
+Esto es un porcentaje de datos muy elevado. Fijándonos en los países que aparecen, la mayoría son países africanos o asiáticos. LLegados a este punto, nos planteamos si quizás la mejor opción no es eliminar directamente estas variables con tanto dato faltante, ya que borrar un 22.4% de los datos es un precio a pagar muy alto. No obstante, no estamos seguros de si es correcto hacerlo puesto que si Population es una variable que influye en el ajuste y es explicativa estaríamos perdiendo mucha información. Para asegurarnos de que podemos eliminar esta variable vamos a eliminar todas las variables NA de nuestro dataframe (aún sabiendo el gran coste que supone, pero es para comprobar si es explicativa o no) y, en primer lugar, vamos a hacer un ajuste de life.expenctancy frente a todas las variables y comprobaremos si Population es significativa o no. Una vez hecho esto, aún si sale que no, por si acaso vamos a hacer un ajuste con el método *step* de la librería *stats*. Este comando se refiere a la función stepwise, la cual, en función de en qué dirección queremos que vaya haciéndo el ajuste, va quitando o añadiendo variables de modo que el AIC sea más pequeño, deteniéndose cuando llega a un punto en el que ni quitando ni añadiendo variables se mejora el ajuste. Así, si la variable Population está en el ajuste óptimo no eliminaremos la variable, pero si no es el caso sí que la borraremos puesto que lo único que provoca su existencia es el tener que eliminar muestras, ya que en este caso, como ya hemos comentado, no se pueden imputar sus valores perdidos.
+
+```{r}
+EV2014_SIN_NA <- na.omit(EV2014)
+ajuste_todo_sin_na <- lm(Life.expectancy ~.-Country, data=EV2014_SIN_NA)
+summary(ajuste_todo_sin_na)
+```
+Como vemos, la variable Population no es explicativa, ya que su p-valor es mayor de 0.05. Así, sí que podríamos eliminarla. De todas formas, comprobémoslo, como hemos dicho, usando el comando *step* y viendo que el ajuste óptimo no la usa como variable predictora:
+
+```{r}
+reg_with_step_sin_na <- step(ajuste_todo_sin_na,direction = 'both')
+```
+
+El ajuste final obtenido es el siguiente:
+
+Life.expectancy ~ Status + percentage.expenditure + BMI + Total.expenditure + HIV.AIDS + Schooling
+
+Por tanto, dado que no está entre las variables predictoras de este ajuste, podemos permitirnos eliminar esta variable de nuestro dataframe y así no tener que eliminar un número tan grande de muestras.
+
+```{r}
+EV2014$Population <- NULL
+```
+
+#### Imputación por casos similares
+
+No obstante, en cuanto al Producto Interior Bruto (GDP), sí que podemos imputar los datos faltantes usando la imputación de casos similares, donde la estimación se realiza teniendo en cuenta otra variable. La variable que usaremos en este caso es el status del país, viendo si está desarrollado o en proceso de ello, para así imputar los diversos valores faltantes como la mediana de los países desarrollados o en vías de desarrollo en función del estatus que tenga el país que tiene un dato faltante en GDP. Usamos la mediana en lugar de la media porque ya sabemos que esta magnitud estadística es más resistente a los outliers. No obstante, antes de imputar los datos vamos a comprobar que tiene sentido hacerlo con las medianas, y para ello realizaremos un histograma del GDP de los países en desarrollo y los desarrollados:
+
+```{r}
+par(mfrow=c(1,2))
+hist(EV2014$GDP[EV2014$Status=='Developed'],main = 'Histograma de países desarrollados',cex.main=0.9,xlab = 'GDP',col = 'blue',freq = F,breaks=13)
+hist(EV2014$GDP[EV2014$Status=='Developing'],main = 'Histograma de países en desarrollo',cex.main=0.9,,xlab = 'GDP',col = 'red',freq = F,breaks = 13)
+
+#Calculamos las medianas de los datos de los países desarrolados y de los países en desarrollo:
+median_developed <- median(EV2014$GDP[EV2014$Status=='Developed'],na.rm = T)
+median_developing <- median(EV2014$GDP[EV2014$Status=='Developing'],na.rm = T)
+
+cat('Mediana de países desarrollados:',median_developed,'\n')
+cat('Mediana de países en desarrollo:',median_developing)
+```
+Como vemos, obtenemos que, para los países desarrollados, la mayor frecuencia de GDP la tenemos de 0 a 20000 \$, siendo mayor de 0 a 10000 que de esta cifra a 20000, que es el segundo bin más frecuente, mientras que la mediana la obtenemos para un valor de 13700 \$. A pesar de que no cae en el bin que más países tiene, es un buen estimador porque se acerca a lo que es más probable que ocurra. De todos modos comprobemos cuántos países desarrollados tienen datos faltantes:
+
+```{r}
+sum(is.na(EV2014$GDP[EV2014$Status=='Developed']))
+
+select(filter(EV2014,Status=='Developed'& is.na(GDP)),Country)
+```
+Sólo tenemos 4 países desarrollados que tienen datos faltantes en GDP, por lo que, aunque la imputación no es muy fina, no causará un gran efecto sobre la variable.
+
+Fijándonos ahora en los países pobres, obtenemos que la mayor frecuencia de GDP la tenemos de 0 a 5000 \$, mientras que la mediana está en 2000 \$, lo que implica que la imputación es buena ya que la mediana cae dentro de lo más común de los países. Una vez hemos hecho esto, imputemos los valores faltantes:
+
+```{r}
+
+EV2014_imp_medianas <- EV2014
+for (i in 1:nrow(EV2014_imp_medianas)){
+  if (is.na(EV2014_imp_medianas[i,'GDP'])){
+    if(EV2014_imp_medianas[i,'Status']=='Developing'){
+      EV2014_imp_medianas[i,'GDP']= median_developing
+    }else{
+      EV2014_imp_medianas[i,'GDP']= median_developed
+    }
+  }
+}
+```
+
+
+Ya tenemos imputados todos los datos de la columna GDP. Veamos ahora cuantos datos faltantes tenemos en cada columna:
+
+```{r}
+variables <- names(EV2014_imp_medianas)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2014_imp_medianas[,name])),'\n')
+}
+```
+Vemos que seguimos teniendo un número reducido de NAs en las variables Alcohol, Hepatitis.B, BMI, thinness.5.9.years y thinness..1.19.years. En este caso, dado que son un número muy pequeño en comparación al número total de datos, vamos a imputarlos usando de nuevo imputación de casos similares, usando, como antes, la variable status, para así no eliminar muestras. Para ello vamos a usar la mediana, que, como ya hemos comentado antes, es un estimador más robusto que la media ante la presencia de outliers. Hagámoslo:
+
+```{r}
+columns_with_na <- c('Alcohol','Hepatitis.B','BMI','thinness..1.19.years','thinness.5.9.years','Total.expenditure','Schooling')
+
+for (variable in columns_with_na){
+  for (i in 1:nrow(EV2014_imp_medianas)){
+    if(is.na(EV2014_imp_medianas[i,variable])){
+      if(EV2014_imp_medianas[i,'Status']=='Developing'){
+        EV2014_imp_medianas[i,variable]= median(EV2014_imp_medianas[,variable][EV2014_imp_medianas$Status=='Developing'],na.rm = T)
+      }else{
+        EV2014_imp_medianas[i,variable]= median(EV2014_imp_medianas[,variable][EV2014_imp_medianas$Status=='Developed'],na.rm = T)
+      }
+    }
+  }
+}
+
+#Comprobamos que ya no hay datos faltantes:
+variables <- names(EV2014_imp_medianas)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2014_imp_medianas[,name])),'\n')
+}
+```
+
+
+
+Ahora ya no tenemos datos faltantes en nuestro dataframe y podemos ver cuál es el ajuste óptimo para describir a la variable life.expectancy. No obstante, en este punto nos planteamos que, si al hacer el ajuste una variable a la que le hemos imputado datos entra dentro del modelo y es predictora, puede ser que al haber imputado los datos faltantes con la mediana tengamos ciertos fallos en el modelo, lo que puede provocar que el R² no sea demasiado alto. Esto ocurre sobre todo con esta variable GDP porque es la que más datos faltantes tiene, por lo que influirá más si sus datos no están bien imputados, aunque también puede ocurrir con las otras. Así, aunque antes ya hemos visto con los histogramas que la imputación con las medianas tenía sentido, vamos ahora a calcular los datos faltantes de GDP construyendo un modelo lineal que prediga los datos faltantes en función de otras variables que no tengan datos faltantes y veremos cuál de los dos modelos tendrá un R² mayor; el obtenido con imputación de casos variables o el obtenido con imputación usando un modelo lineal. 
+
+#### Imputación usando un modelo lineal
+
+Comenzaremos imputando los datos para la variable GDP. Para construir el modelo volvemos a usar la función *step*, usando el dataframe de los datos ya imputados, para así construir el modelo con el mayor número de datos posible puesto que estos datos imputados ya hemos visto antes que sí que tenían sentido:
+
+```{r}
+ajuste_GDP <- lm(GDP ~.-Country, data=EV2014_imp_medianas)
+reg_GDP<- step(ajuste_GDP,direction = 'both')
+```
+
+Obtenemos que el ajuste que reduce al máximo el AIC con la función *step* es:
+
+GDP ~ percentage.expenditure + BMI + Polio + Total.expenditure + Schooling
+
+Veamos si las variables son significativas:
+
+```{r}
+reg_GDP <- lm(GDP ~ percentage.expenditure + BMI + Polio + Total.expenditure + Schooling,data = EV2014_imp_medianas)
+summary(reg_GDP)
+```
+
+Observamos que tanto BMI como Polio no son significativas. Así, quitamos la menos significativa primero, es decir, BMI.
+
+```{r}
+reg_GDP <- lm(GDP ~ percentage.expenditure+ Polio + Total.expenditure + Schooling,data = EV2014_imp_medianas)
+summary(reg_GDP)
+```
+Polio sigue siendo sin ser significativa así que la quitamos también. 
+
+```{r}
+reg_GDP <- lm(GDP ~ percentage.expenditure + Total.expenditure + Schooling ,data = EV2014_imp_medianas)
+summary(reg_GDP)
+```
+Todas las que quedan ya son significativas. Así, ahora predeciremos los datos faltantes de GDP con este ajuste:
+
+```{r}
+PREDICT_GDP <- select(EV2014_imp_medianas,percentage.expenditure,Total.expenditure,Schooling,Country)
+gdp_prediccion <- predict(reg_GDP,newdata=PREDICT_GDP,interval='prediction')
+gdp_prediccion
+```
+
+Obtenemos predicciones de GDP negativas, lo que no tiene ningún sentido. Así, lo que hacemos es volver al ajuste y ver qué variable tiene pendiente negativa. Observamos que esta variable que tiene pendiente negativa es Total.expenditure, la cual a su vez es la menos significativa de las tres, por lo que decidimos quitarla del ajuste y predecir con las dos más significativas, que son percentaje.expenditure y Schooling.
+
+```{r}
+reg_GDP <- lm(GDP ~ percentage.expenditure + Schooling ,data = EV2014_imp_medianas)
+summary(reg_GDP)
+
+PREDICT_GDP <- select(EV2014_imp_medianas,percentage.expenditure,Schooling,Country)
+gdp_prediccion <- predict(reg_GDP,newdata=PREDICT_GDP,interval='prediction')
+gdp_prediccion
+```
+
+Con la variable Schooling también aparecen predicciones de GDP negativas, por lo que decidimos eliminarla y sólo predecir con percentaje.expenditure, que además es la más significativa de las tres:
+
+```{r}
+reg_GDP <- lm(GDP ~ percentage.expenditure ,data = EV2014_imp_medianas)
+summary(reg_GDP)
+
+PREDICT_GDP <- select(EV2014_imp_medianas,percentage.expenditure,Country)
+gdp_prediccion <- predict(reg_GDP,newdata=PREDICT_GDP,interval='prediction')
+gdp_prediccion
+```
+
+Introduzcamos ahora las predicciones en los datos faltantes de nuestro dataframe:
+
+```{r}
+#Creamos un vector de predicciones
+predicciones_GDP <- c()
+for(i in 1:nrow(gdp_prediccion)){
+  predicciones_GDP[i] <- gdp_prediccion[i]
+}
+
+#Creamos el vector de GDP
+
+GDP <- EV2014$GDP
+
+#Obtenemos las posiciones donde están los NA
+posiciones_na <- c()
+for (i in 1:length(GDP)){
+  if(is.na(GDP[i])){
+    posiciones_na <- c(posiciones_na,i)
+  }
+}
+
+#Sustituimos los vectores en estas posiciones en GDP
+for (posicion in posiciones_na){
+  GDP[posicion] <- predicciones_GDP[posicion]
+}
+
+#Comprobamos que ya no hay NAs
+sum(is.na(GDP))
+
+#Creamos un nuevo data.frame en el que metemos la columna de GDP imputada con los datos calculados por nuestro modelo:
+EV2014_imp_modelo <- EV2014
+EV2014_imp_modelo$GDP <- GDP
+```
+
+Procedamos ahora con la variable Schooling, la cual hemos visto antes que tenía también 10 datos faltantes. Para construir el modelo volvemos a usar la función *step*, usando el dataframe de los datos ya imputados:
+
+```{r}
+ajuste_Schooling <- lm(Schooling ~.-Country-Life.expectancy, data=EV2014_imp_medianas)
+reg_GDP<- step(ajuste_Schooling,direction = 'both')
+```
+
+Obtenemos que el ajuste que reduce al máximo el AIC con la función *step* es:
+
+Schooling ~ Status + Life.expectancy + Alcohol + BMI + HIV.AIDS
+
+Veamos si las variables son significativas:
+
+```{r}
+reg_Sch <- lm(Schooling ~ Status + Alcohol + BMI + Diphtheria + HIV.AIDS + GDP + thinness..1.19.years,data = EV2014_imp_medianas)
+summary(reg_Sch)
+```
+
+Todas las que quedan ya son significativas. Así, ahora predeciremos los datos faltantes de Schooling con este ajuste:
+
+```{r}
+PREDICT_Sch <- select(EV2014_imp_medianas,Status,Life.expectancy,Alcohol,BMI,Country,Diphtheria,HIV.AIDS,GDP,thinness..1.19.years)
+sch_prediccion <- predict(reg_Sch,newdata=PREDICT_Sch,interval='prediction')
+sch_prediccion
+```
+
+Como antes, introduzcamos ahora las predicciones en los datos faltantes de nuestro dataframe:
+
+```{r}
+#Creamos un vector de predicciones
+predicciones_sch <- c()
+for(i in 1:nrow(sch_prediccion)){
+  predicciones_sch[i] <- sch_prediccion[i]
+}
+
+#Creamos el vector de GDP
+sch <- EV2014$Schooling
+
+#Obtenemos las posiciones donde están los NA
+posiciones_na <- c()
+for (i in 1:length(sch)){
+  if(is.na(sch[i])){
+    posiciones_na <- c(posiciones_na,i)
+  }
+}
+
+#Sustituimos los vectores en estas posiciones en GDP
+for (posicion in posiciones_na){
+  sch[posicion] <- predicciones_sch[posicion]
+}
+
+#Comprobamos que ya no hay NAs
+sum(is.na(sch))
+
+#Creamos un nuevo data.frame en el que metemos la columna de GDP imputada con los datos calculados por nuestro modelo:
+EV2014_imp_modelo$Schooling <- sch
+```
+
+Ya tenemos imputados todos los datos de la columna Schooling. Veamos ahora cuantos datos faltantes tenemos en cada columna:
+
+```{r}
+variables <- names(EV2014_imp_modelo)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2014_imp_modelo[,name])),'\n')
+}
+```
+
+Imputemos ahora los datos faltantes de la variable Hepatitis.B, de los cuales también tenemos 10. Para construir el modelo volvemos a usar la función *step*, usando el dataframe de los datos ya imputados:
+
+```{r}
+ajuste_hep <- lm(Hepatitis.B ~.-Country, data=EV2014_imp_medianas)
+reg_hep<- step(ajuste_hep,direction = 'both')
+```
+
+Obtenemos que el ajuste que reduce al máximo el AIC con la función *step* es:
+
+Hepatitis.B ~ Diphtheria
+
+```{r}
+reg_hep <- lm(Hepatitis.B ~ Diphtheria,data = EV2014_imp_medianas)
+summary(reg_hep)
+```
+Dado que sólo teníamos una, ahora predeciremos los datos faltantes de Hepatitis.B con este ajuste:
+
+```{r}
+PREDICT_hep <- select(EV2014_imp_medianas,Diphtheria,Country)
+hep_prediccion <- predict(reg_hep,newdata=PREDICT_hep,interval='prediction')
+hep_prediccion
+```
+
+Como antes, introduzcamos ahora las predicciones en los datos faltantes de nuestro dataframe:
+
+```{r}
+#Creamos un vector de predicciones
+predicciones_hep <- c()
+for(i in 1:nrow(hep_prediccion)){
+  predicciones_hep[i] <- hep_prediccion[i]
+}
+
+#Creamos el vector de GDP
+hep <- EV2014$Hepatitis.B
+
+#Obtenemos las posiciones donde están los NA
+posiciones_na <- c()
+for (i in 1:length(hep)){
+  if(is.na(hep[i])){
+    posiciones_na <- c(posiciones_na,i)
+  }
+}
+
+#Sustituimos los vectores en estas posiciones en GDP
+for (posicion in posiciones_na){
+  hep[posicion] <- predicciones_hep[posicion]
+}
+
+#Comprobamos que ya no hay NAs
+sum(is.na(hep))
+
+#Creamos un nuevo data.frame en el que metemos la columna de GDP imputada con los datos calculados por nuestro modelo:
+EV2014_imp_modelo$Hepatitis.B <- hep
+``` 
+
+Vemos que, como antes, seguimos teniendo un número reducido de NAs en las variables Alcohol, BMI, thinness.5.9.years y thinness..1.19.years. En este caso, dado que son un número muy pequeño en comparación al número total de datos, los imputaremos de nuevo usando imputación de casos similares, empleando, como antes, la variable status. Para ello vamos a usar la mediana, que, como ya hemos comentado antes, es un estimador más robusto que la media ante la presencia de outliers. Cabe decir que no volvemos a crear un modelo e imputar con las predicciones de este los valores faltantes puesto que el número de muestras vacías sigue siendo pequeño y no vale la pena complicarlo tanto. Hagámoslo:
+
+```{r}
+columns_with_na <- c('Alcohol','BMI','thinness..1.19.years','thinness.5.9.years','Total.expenditure')
+
+for (variable in columns_with_na){
+  for (i in 1:nrow(EV2014_imp_modelo)){
+    if(is.na(EV2014_imp_modelo[i,variable])){
+      if(EV2014_imp_modelo[i,'Status']=='Developing'){
+        EV2014_imp_modelo[i,variable]= median(EV2014_imp_modelo[,variable][EV2014_imp_modelo$Status=='Developing'],na.rm = T)
+      }else{
+        EV2014_imp_modelo[i,variable]= median(EV2014_imp_modelo[,variable][EV2014_imp_modelo$Status=='Developed'],na.rm = T)
+      }
+    }
+  }
+}
+
+#Comprobamos que ya no hay datos faltantes:
+variables <- names(EV2014_imp_modelo)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2014_imp_modelo[,name])),'\n')
+}
+```
+
+Ya no tenemos ningún dato faltante NA en nuestro dataframe, habiéndolo imputado esta vez con un modelo. 
+
+
+## Construcción del ajuste óptimo
+
+Para obtener cuál es el ajuste óptimo, usamos el comando *step* de la librería *stats*, que, como ya hemos explicado antes, en función de en qué dirección queremos que vaya haciéndolo, va quitando o añadiendo variables de modo que el AIC del ajuste sea más pequeño, deteniéndose cuando llega a un punto en el que ni quitando ni añadiendo variables se mejora. Así, lo que vamos a hacer va a ser aplicar este comando para buscar cuál es el ajuste óptimo usando los dos dataframes que tenemos: el que hemos obtenido imputando por casos similares y el que hemos obtenido imputando empleando un modelo lineal. El criterio para elegir el ajuste óptimo será escoger aquel que explica una mayor varianza de los residuos, es decir, cuál de los dos tiene un R² ajustado mayor. Cabe decir que usamos el valor del R² ajustado debido a que este da el porcentaje de variación explicado solo por aquellas variables independientes que en realidad afectan a la variable dependiente, mientras que el R² múltiple da el porcentaje de variación explicada como si todas las variables independientes en el modelo afectaran a la variable dependiente.
+
+### Ajuste empleando el dataframe con los datos faltantes imputados con la mediana de casos similares
+
+Veamos qué ajuste nos da este caso usando, como hemos comentado, el comando *step*:
+
+```{r}
+ajuste_todo_mediana <- lm(Life.expectancy ~.-Country, data=EV2014_imp_medianas)
+reg_with_step <- step(ajuste_todo_mediana,direction = 'both')
+```
+
+Vemos que, siguiendo el criterio del stepwise, el ajuste que minimiza el error según el criterio de AIC es el de Life.expectancy ~ Status + Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling.
+
+Podemos comparar este modelo obtenido con el que tenemos si en lugar de usar la función stepwise usamos la función *regsubsets* de la librería *leaps*, aunque en este caso comparamos con el BIC en lugar de con el AIC puesto que esta función no da valores de esta magnitud.
+
+```{r}
+eleccion <- regsubsets(Life.expectancy ~.-Country,data=EV2014_imp_medianas,nvmax=15)
+res.eleccion <- summary(eleccion)
+res.eleccion
+which(res.eleccion$bic==min(res.eleccion$bic))
+
+```
+
+Con este criterio obtenemos que el ajuste que más reduce el BIC es el que representa life.expectancy frente a Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling. Observamos que los dos ajustes son muy parecidos salvo porque el realizado con step tiene la variable status. Elijamos ahora cuál de los dos ajustes nos quedamos. Para ello, los realizaremos y veremos cuál de ellos explica una mayor varianza de los residuos, es decir, cuál de los dos tiene un R² ajustado mayor. Comencemos con el ajuste de step:
+
+```{r}
+reg_with_step <- lm(Life.expectancy ~ Status + Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling, data = EV2014_imp_medianas)
+summary(reg_with_step)
+```
+Dado que el el nivel del factor Status no es significativo (recordemos que nuestro criterio para decir si una variable es significativa o no es que su p-valor sea menor que 0.05), deberíamos eliminarlo. No obstante, esta variable es un factor de dos niveles y no tiene sentido dejar una variable factor de un solo nivel, por lo que eliminamos esta variable del ajuste.
+Si lo hacemos, con el el ajuste usando *step* llegamos al mismo ajuste que obteníamos con *regsubsets*, lo que nos da seguridad en que este ajuste es el óptimo. De ahora en adelante llamaremos a este ajuste reg1_mediana:
+
+```{r}
+reg1_mediana <- lm(Life.expectancy ~  Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling, data = EV2014_imp_medianas)
+summary(reg1_mediana)
+```
+Este modelo explica el 75,6 % de la varianza. La variable más explicativa de nuestro modelo será aquella que tenga un valor más pequeño del p-valor, es decir, será aquella que más significativa sea, y en nuestro caso es *Schooling*, con un pvalor nulo (del orden de 10⁻¹⁶). Como vemos en el valor de los coeficientes en el summary, *life.expectancy* tiene una relación proporcional con la variable *Schooling*, presentando una pendiente de 1.48. Esto implica que, según nuestro ajuste, cuanto más años de media de escolarización en un país más esperanza de vida tiene este. 
+
+### Ajuste empleando el dataframe con los datos faltantes imputados con un modelo lineal
+
+Veamos qué ajuste nos da ahora este caso usando, como hemos comentado, el comando *step*:
+
+```{r}
+ajuste_todo_modelo <- lm(Life.expectancy ~.-Country, data=EV2014_imp_modelo)
+reg_with_step <- step(ajuste_todo_modelo,direction = 'both')
+```
+
+Vemos que, siguiendo el criterio del stepwise, el ajuste que minimiza el error según el criterio de AIC no es el mismo de antes: Life.expectancy ~ Life.expectancy ~ Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling.
+
+Podemos comparar este modelo obtenido, como hemos hecho en el otro caso, con el que tenemos si en lugar de usar la función stepwise usamos la función *regsubsets* de la librería *leaps*.
+
+```{r}
+eleccion <- regsubsets(Life.expectancy ~.-Country,data=EV2014_imp_modelo,nvmax=15)
+res.eleccion <- summary(eleccion)
+res.eleccion
+which(res.eleccion$bic==min(res.eleccion$bic))
+```
+
+Como ya ha ocurrido antes, usando este comando obtenemos que el ajuste que más reduce el BIC es el que representa life.expectancy frente a Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling.Así, con el el ajuste usando *step* llegamos al mismo ajuste que obteníamos con *regsubsets*, lo que nos da seguridad en que este ajuste es el óptimo. Evaluemos este modelo:
+
+```{r}
+reg1_modelo <- lm(formula = Life.expectancy ~  Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling, data = EV2014_imp_modelo)
+summary(reg1_modelo)
+```
+Nuestro modelo, al igual que antes, explica el 76,94 % de la varianza. La variable más explicativa en este caso sigue siendo *Schooling*, con un pvalor nulo (del orden de 10⁻¹⁶). Como vemos en el valor de los coeficientes en el summary, *life.expectancy* tiene una relación proporcional con la variable *Schooling*, presentando una pendiente también de 1.55. 
+
+Dado que el ajuste realizado con imputación de datos mediante modelos tiene un mejor R² ajustado que el que teníamos imputando datos mediante casos similares, elegimos quedarnos con el primero y a partir de ahora le llamaremos reg1.
+
+```{r}
+reg1 <- reg1_modelo
+EV2014 <- EV2014_imp_modelo
+```
+
+
+## Evaluación del ajuste
+
+### Modelo lineal sin términos polinómicos
+
+Una vez hemos visto esto, pasemos ahora a observar la presencia de puntos influyentes en nuestro modelo:
+
+```{r}
+par(mfrow=c(2,2))
+plot(reg1)
+```
+Aparentemente tenemos varios puntos influyentes. Veamos en concreto los puntos influyentes en el eje y usando el leverage:
+
+```{r,fig.width=5,fig.height=4}
+n<-nrow(EV2014)
+p <- length(coef(reg1))
+plot(fitted(reg1),hatvalues(reg1),main="leverages vs fitted",ylim=c(min(hatvalues(reg1)),3*p/n)) 
+abline(h=2*p/n,col="blue",lwd=1);  
+abline(h=3*p/n,col="red",lwd=3);
+```
+Como vemos, sí existen algunos valores de leverage bastante altos, lo que implica la presencia de puntos significativos. Si ahora analizamos la existencia de puntos influyentes en el eje x con la distancia de Cook, obtenemos la siguiente figura:
+
+```{r,fig.width=5,fig.height=4}
+plot(fitted(reg1),cooks.distance(reg1),main="Distancia de Cook vs fitted")
+abline(h=1,col="red",lwd=1);
+```
+Observamos que no hay ningún valor que sobrepase el nivel crítico establecido de 1. Veamos ahora un gráfico de bolas de la influencia utilizando las funciones del paquete car, así como una tabla que nos indica el valor de los leverages y de la distancia de Cook para los puntos más influyentes:
+
+```{r,fig.width=5,fig.height=4}
+influencePlot(reg1) 
+summary(influence.measures(reg1)) 
+```
+Así es más fácil ver qué puntos tienen son influyentes y debido a qué (si tienen un leverage alto o un valor grande de la distancia de Cook). Hay que tener en cuenta que nuestro objetivo es eliminar los puntos más influyentes pero evitando quitar  muchos puntos influyentes para no perder mucho dato. Vamos a adoptar entonces un criterio de que ningún punto puede tener un valor de leverage mayor que 0.2 y ningún valor de distancia de Cook mayor que 0.08. Este criterio es un tanto laxo, pero es así por lo que hemos comentado de que no queremos eliminar muchos puntos puesto que antes ya hemos borrado una cantidad considerable, Así, eliminamos los catorce puntos más influyentes:
+
+```{r}
+influyentes <- c(50,2057,2299,1540,1476,434,2619,2491,1188,2379,2089,996,2073,2523) 
+EV2014_1 <- EV2014[setdiff(row.names(EV2014),influyentes),]
+reg2 <- update(reg1,data=EV2014_1)
+par(mfrow=c(2,2))
+plot(reg2)
+
+#Veamos las distancias de Cook y el leverage
+par(mfrow=c(2,1))
+n<-nrow(EV2014_1)
+p <- length(coef(reg2))
+plot(fitted(reg2),hatvalues(reg2),main="leverages vs fitted",ylim=c(min(hatvalues(reg2)),3*p/n)) 
+abline(h=2*p/n,col="blue",lwd=1);  
+abline(h=3*p/n,col="red",lwd=3);
+
+plot(fitted(reg2),cooks.distance(reg2),main="Distancia de Cook vs fitted")
+abline(h=1,col="red",lwd=1);
+
+influencePlot(reg2)
+
+```
+Seguimos teniendo algunos puntos con un valor que roza el umbral que habíamos puesto antes de leverage y distancia de Cook, pero estos entran dentro de nuestro criterio y son aceptables (el leverage sí que es cierto que es considerable, pero la distancia de Cook es mucho menor que 1, que es el criterio que se suele seguir para considerar un punto excesivamente influyente). Estamos satisfechos puesto que hemos obtenido un modelo habiendo quitado los puntos más influyentes quitando tan sólo 14 muestras, lo que representa el 7.6% de los datos. A partir de aquí, seguiremos usando el ajuste reg2, que es el mismo que el reg1 solo que habiendo quitado los puntos influyentes.
+
+Una vez vista la influencia, pasamos a ver la colinealidad entre las variables. Para ello, usamos el factor de inflación de la varianza (VIF), el cual nos indica la colinealidad, siendo preocupante si el valor de esta variable supera un valor de 10.
+
+```{r}
+vif(reg2)
+```
+
+
+Viendo el bajo valor del factor de inflación de la varianza (VIF) de nuestras variables (mucho menor de 10, que es el valor crítico), asumimos que no hay colinealidad entre ellas. 
+
+Veamos ahora si nuestros datos son heterocedásticos usando para ello la función *bptest* del paquete *lmtest*. Esta función realiza un test de Breusch-Pagan test para comprobar si hay heterocedasticidad; si obtenemos un p-valor menor que $\alpha$=0.05, esto significa que nuestro ajuste no es homocedástico (que es la hipótesis nula). Veámoslo:
+
+```{r}
+bptest(reg2)
+```
+Obtenemos un p-valor de 0.99, lo que nos dice que tenemos homocedasticidad. 
+
+Una vez visto esto pasamos a ver si nuestros datos presentan normalidad o no. Para ello, usamos, por un lado, la función *qqnorm* de la librería *stats*, que es una función genérica que produce una gráfica QQ normal de los valores en el eje y, y por otro lado, la función *shapiro.test* de la librería *stats*, que, de forma similar a la función *bptest* para comprobar la homocedasticidad, realiza un contraste de hipótesis con la hipótesis nula de que hay normalidad; así, si obtenemos un p-valor menor que $\alpha$=0.05, esto significa que nuestro ajuste no es normal. Veámos si tenemos normalidad o no:
+
+```{r}
+res_stu<-rstudent(reg2) 
+qqnorm(res_stu)
+qqline(res_stu,col="red")
+
+#test de normalidad
+shapiro.test(res_stu)
+```
+Como podemos ver tanto en la gráfica qqplot como en el p-valor, nuestro ajuste sí que presenta normalidad. 
+
+Veamos en último lugar si nuestro ajuste tiene linealidad:
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+res_stu<-rstudent(reg2) 
+  ggplot(data = EV2014_1, aes(x =fitted(reg2), y = res_stu)) + 
+  geom_point() + geom_smooth(color = "coral",span=0.95) + geom_hline(yintercept = 0) +
+  labs(y = "residuos studentizados",
+       x = "valores ajustados") +
+  theme_bw()
+```
+Vemos que obtenemos un ajuste lineal salvo por el extremo izquierdo, donde la tendencia con sus intervalos de confianza se desvían de la horizontal. A pesar de esto, consideramos que es un buen resultado. 
+
+Veamos si después de haber quitado varios puntos influyentes las variables siguen siendo explicativas y comprobemos el valor de R²:
+
+```{r}
+summary(reg2)
+```
+
+Como deseábamos, las variables del ajuste siguen siendo significativas. Obtenemos a su vez un valor de R² ajustado de 0.806, lo que es un buen resultado, teniendo en cuenta que tan sólo hemos eliminado el 7.6% de nuestros datos originales. De este modo, concluimos que nuestro ajuste es bueno: no tiene puntos influyentes ni colinealidad, es homocedástico, normal y también es lineal, y todo esto habiendo eliminado muy pocos puntos.
+
+### Modelo lineal con  términos polinómicos
+
+Una vez hemos hecho esto, nos planteamos si quizás, en lugar de haber realizado un ajuste lineal como se ha realizado, podríamos haber trabajado con un ajuste con alguna de las variables predictoras con un término polinómico que quizás fuesen más explicativas. Para ver si alguna de nuestras variables predictoras, tras haber quitado los puntos influyentes, tiene alguna tendencia polinómica, vemos la tendencia de los residuos estudentizados:
+
+```{r}
+#Refresquemos cuál es el ajuste original:
+reg2 <- lm(Life.expectancy ~  Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling, data = EV2014_1)
+res_stu <- rstudent(reg2)
+
+#Diphtheria
+ggplot(data = EV2014_1, aes(x =Diphtheria, y = res_stu)) + geom_point() + geom_smooth(color = "coral",span=0.7) + geom_hline(yintercept = 0) +  labs(y = "residuos studentizados",x = "valores ") +  theme_bw() + ggtitle("Diphtheria")
+#HIV.AIDS
+ggplot(data = EV2014_1, aes(x =HIV.AIDS, y = res_stu)) + geom_point() + geom_smooth(color = "coral",span=0.7) + geom_hline(yintercept = 0) +  labs(y = "residuos studentizados",x = "valores ") +  theme_bw()+ ggtitle("HIV.AIDS")
+#GDP
+ggplot(data = EV2014_1, aes(x =GDP, y = res_stu)) + geom_point() + geom_smooth(color = "coral",span=0.7) + geom_hline(yintercept = 0) +  labs(y = "residuos studentizados",x = "valores ") +  theme_bw()+ ggtitle("GDP")
+#thinnesss.5.9.years
+ggplot(data = EV2014_1, aes(x =thinness.5.9.years, y = res_stu)) + geom_point() + geom_smooth(color = "coral",span=0.7) + geom_hline(yintercept = 0) +  labs(y = "residuos studentizados",x = "valores ") +  theme_bw()+ ggtitle("thinness.5.9.years")
+#Schooling
+ggplot(data = EV2014_1, aes(x =Schooling, y = res_stu)) + geom_point() + geom_smooth(color = "coral",span=0.7) + geom_hline(yintercept = 0) +  labs(y = "residuos studentizados",x = "valores ") +  theme_bw()+ ggtitle("Schooling")
+
+```
+Observamos que algunos de los ajustes tienen una tendencia clara polinómica, por lo que nos planteamos introducir términos polinómicos a nuestro ajuste. Concretamente, vemos que tanto la variable Diphteria como la variable GDP tienen una tendencia bastante lineal, por lo que el orden del polinomio con estas variables será 1. En cambio, con las otras tres, tenemos que la tendencia no es lineal, por lo que actualizaremos el ajuste añadiendo términos polinómicos con el comando poly, que nos asegura que, al ser polinomios ortogonales, no afectará a la colinealidad de las variables. De este modo, cada vez que aumentamos el orden del ajuste de una variable, para asegurarnos que el nuevo orden es significativo y que el modelo actualizado y el anterior no son iguales, usamos el test *ANOVA*, de la librería *car*. Este comando nos da un p-valor que, si es menor que nuestro nivel de significación $\alpha$, nos indica que los modelos no son iguales, mientras que si es mayor que $\alpha$ nos indica que no hemos ganado nada con el modelo actualizado.
+
+Así, creamos un nuevo modelo con el comando poly con polinomios de orden 1 para todas las variables, y vamos añadiendo órdenes, comprobando con el ANOVA si los modelos nuevo y viejo son distintos.
+
+```{r}
+mod1 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,1) +  poly(GDP,1) + poly(Schooling,1) + poly(thinness.5.9.years,1) ,data=EV2014)
+
+#Añadimos grado 2 a las tres variables no lineales y hacemos test ANOVA:
+mod2 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,2) +  poly(GDP,1) + poly(Schooling,2) + poly(thinness.5.9.years,2) ,data=EV2014)
+
+anova(mod1,mod2, test="F")
+
+#No son iguales, por lo que aumentamos el orden del ajuste para las tres variables:
+mod3 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,3) +  poly(GDP,1) + poly(Schooling,3) + poly(thinness.5.9.years,3) ,data=EV2014)
+
+anova(mod2,mod3, test="F")
+
+#No son iguales, por lo que aumentamos el orden del ajuste para las tres variables:
+mod4 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,4) +  poly(GDP,1) + poly(Schooling,4) + poly(thinness.5.9.years,4) ,data=EV2014)
+
+anova(mod4,mod3, test="F")
+
+#El modelo 3 y el 4 ya son iguales. Por tanto, de momento no vamos a aumentar más el orden de los polinomios a la vez; iremos uno a uno.
+
+mod5 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,4) +  poly(GDP,1) + poly(Schooling,3) + poly(thinness.5.9.years,3) ,data=EV2014)
+
+anova(mod3,mod5, test="F")
+
+#No son iguales, por lo que aumentamos el orden del ajuste para las la variable HIV.AIDS:
+mod6 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,5) +  poly(GDP,1) + poly(Schooling,3) + poly(thinness.5.9.years,3) ,data=EV2014)
+
+anova(mod6,mod5, test="F")
+
+#El modelo 6 y el 5 son iguales; para la variable HIV.AIDS nos quedamos a orden 4; ahora aumentamos Schooling:
+
+mod7 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,4) +  poly(GDP,1) + poly(Schooling,4) + poly(thinness.5.9.years,3) ,data=EV2014)
+
+anova(mod7,mod5, test="F")
+
+#El modelo 7 y el 5 son iguales; para la variable Schooling nos quedamos a orden 3; ahora aumentamos thinnesss.5.9.years:
+
+mod8 <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,4) +  poly(GDP,1) + poly(Schooling,3) + poly(thinness.5.9.years,4) ,data=EV2014)
+
+anova(mod8,mod5, test="F")
+
+#El modelo 8 y el 5 son iguales; para la variable thinnesss.5.9.years nos quedamos a orden 3
+```
+
+Como hemos visto, el ajuste con el que nos quedamos es:
+
+Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,4) +  poly(GDP,1) + poly(Schooling,3) + poly(thinness.5.9.years,3)
+
+A partir de ahora vamos a llamarlo reg_poly. Veamos si todas las variables son significativas:
+
+```{r}
+reg_poly <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,4) +  poly(GDP,1) + poly(Schooling,3) + poly(thinness.5.9.years,3) ,data=EV2014)
+
+summary(reg_poly)
+```
+Tenemos que sólo una variable no es significativa, y es el polinomio de segundo orden de Schooling. De este modo, puesto que la curva de residuos de Schooling no es lineal pero se acerca a ello, eliminamos este orden y el de orden 3 para Schooling.
+
+```{r}
+reg_poly <- lm(Life.expectancy ~ poly(Diphtheria,1) + poly(HIV.AIDS,4) +  poly(GDP,1) + poly(Schooling,1) + poly(thinness.5.9.years,3) ,data=EV2014)
+
+summary(reg_poly)
+```
+
+Ya tenemos que todas las variables son significativas. Una vez hemos visto esto, veamos la cantidad de puntos influyentes que tenemos en nuestro modelo, siguiendo el criterio de antes de que ningún punto puede tener un valor de leverage mayor que 0.2 y ningún valor de distancia de Cook mayor que 0.08.
+
+
+```{r}
+par(mfrow=c(2,2))
+plot(reg_poly)
+```
+Aparentemente tenemos varios puntos influyentes. Veamos en concreto los puntos influyentes en el eje y usando el leverage:
+
+```{r,fig.width=5,fig.height=4}
+n<-nrow(EV2014)
+p <- length(coef(reg_poly))
+plot(fitted(reg_poly),hatvalues(reg_poly),main="leverages vs fitted",ylim=c(min(hatvalues(reg_poly)),3*p/n)) 
+abline(h=2*p/n,col="blue",lwd=1);  
+abline(h=3*p/n,col="red",lwd=3);
+```
+Como vemos, sí existen algunos valores de leverage bastante altos, lo que implica la presencia de puntos significativos. Si ahora analizamos la existencia de puntos influyentes en el eje x con la distancia de Cook, obtenemos la siguiente figura:
+
+```{r,fig.width=5,fig.height=4}
+plot(fitted(reg_poly),cooks.distance(reg_poly),main="Distancia de Cook vs fitted")
+abline(h=1,col="red",lwd=1);
+```
+Observamos que hay un valor que sobrepase el nivel crítico establecido de 1. Veamos ahora un gráfico de bolas de la influencia utilizando las funciones del paquete car, así como una tabla que nos indica el valor de los leverages y de la distancia de Cook para los puntos más influyentes:
+
+```{r,fig.width=5,fig.height=4}
+influencePlot(reg_poly) 
+summary(influence.measures(reg_poly)) 
+```
+Siguiendo entonces el criterio de que ningún punto puede tener un valor de leverage mayor que 0.2 y ningún valor de distancia de Cook mayor que 0.08, veamos cuántos puntos eliminamos. 
+
+```{r}
+influyentes <- (c(which(hatvalues(reg_poly)>0.2 | cooks.distance(reg_poly) > 0.08)))
+length(influyentes)
+#con el which pone el de nombre del elemento la posicion y en el valor el índice; nosotros queremos por tanto los nombres
+influyentes <- as.numeric(names(influyentes))
+influyentes <-  c(influyentes,1572,2299,504,434,50)
+EV2014_1 <- EV2014[setdiff(row.names(EV2014),influyentes),]
+reg_poly2 <- update(reg_poly,data=EV2014_1)
+
+```
+
+Hemos eliminado 10 puntos influyentes siguiendo nuestro criterio, lo que supone un 5.4 % de los valores iniciales. Podemos por tanto estar satisfechos de como lo hemos hecho. Pasemos ahora a ver la colinealidad entre las variables. Para ello, al igual que antes, usamos el factor de inflación de la varianza (VIF), el cual nos indica la colinealidad, siendo preocupante si el valor de esta variable supera un valor de 10.
+
+```{r}
+vif(reg_poly2)
+```
+
+
+Viendo el bajo valor del factor de inflación de la varianza (VIF) de nuestras variables (mucho menor de 10, que es el valor crítico), asumimos que no hay colinealidad entre ellas. 
+
+Veamos ahora si nuestros datos son heterocedásticos usando para ello la función *bptest* del paquete *lmtest*:
+
+```{r}
+bptest(reg_poly2)
+```
+Obtenemos un p-valor de 0.11, lo que nos dice que tenemos homocedasticidad. 
+
+Una vez visto esto pasamos a ver si nuestros datos presentan normalidad o no. Para ello, al igual que antes, usamos, por un lado, la función *qqnorm* de la librería *stats*, y por otro lado, la función *shapiro.test* de la librería *stats*. Veámos si tenemos normalidad o no:
+
+```{r}
+res_stu<-rstudent(reg_poly2) 
+qqnorm(res_stu)
+qqline(res_stu,col="red")
+
+#test de normalidad
+shapiro.test(res_stu)
+```
+Como podemos ver tanto en la gráfica qqplot como en el p-valor, nuestro ajuste sí que presenta normalidad. 
+
+Veamos en último lugar si nuestro ajuste tiene linealidad:
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+res_stu<-rstudent(reg_poly2) 
+  ggplot(data = EV2014_1, aes(x =fitted(reg_poly2), y = res_stu)) + 
+  geom_point() + geom_smooth(color = "coral",span=0.95) + geom_hline(yintercept = 0) +
+  labs(y = "residuos studentizados",
+       x = "valores ajustados") +
+  theme_bw()
+```
+A diferencia de antes, nuestro ajuste ahora sí que es lineal en todas las zonas de valores ajustados. Por último, veamos si después de haber quitado varios puntos influyentes las variables siguen siendo explicativas y comprobemos el valor de R²:
+
+```{r}
+summary(reg_poly2)
+```
+Como deseábamos, las variables del ajuste siguen siendo significativas. Obtenemos a su vez un valor de R² ajustado de 0.826, lo que es un buen resultado, mejorando de hecho al anterior sin variables polinómicas. Así, concluimos que nuestro ajuste es bueno: no tiene puntos influyentes ni colinealidad, es homocedástico, normal y también es lineal, y todo esto habiendo eliminado muy pocos puntos. No obstante, el haber utilizado ajustes polinómicos para entrenar puede provocar problemas a la hora de predecir valores futuros, como es nuestro caso, dado que puede producir sobreentrenamiento. En el siguiente apartado comprobaremos si se da o no con este ajuste.
+
+## Predicción de los datos del año 2015
+
+### Predicción no para el Kaggle
+
+En primer lugar cargamos los datos:
+
+```{r}
+load(file='../data/EV2015.RData')
+```
+
+Vamos a quedarnos solo con las variables del dataframe con las que vamos a ajustar, eliminando todas las demás. Recordemos que nuestro ajuste tiene la forma
+
+Life.expectancy ~ Diphtheria + HIV.AIDS + GDP + thinness.5.9.years + Schooling
+
+```{r}
+variables <- c('Diphtheria','HIV.AIDS','GDP','thinness.5.9.years','Schooling','Country','Status')
+#la variable country la dejamos para ver los países donde tenemos datos faltantes pero luego la eliminaremos
+
+EV2015_predict <- EV2015
+names <- names(EV2015_predict)
+
+#quitamos las variables del vector de nombres a eliminar
+variables_to_delete <- names[!grepl(paste0(variables, collapse = "|"), names)]
+
+for (variable in variables_to_delete){
+  EV2015_predict[,variable] <- NULL
+}
+
+#Comprobemos que están correctamente borradas:
+names(EV2015_predict)
+
+#HACIÉNDOLO SOLO CON LAS VARIABLES DE NUESTRO AJUSTE QUE NO SON NA:
+EV2015_sin_NA <- na.omit(EV2015_predict)
+paises_sin_na <- EV2015_sin_NA$Country
+```
+
+Ya tenemos borradas las variables que no servían en el ajuste. Una vez hecho esto, vamos a comprobar si estas variables restantes tienen datos faltantes:
+
+```{r}
+variables <- names(EV2015_predict)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict[,name])),'\n')
+}
+
+cat('Los países con datos faltantes son: \n')
+EV2015_predict$Country[as.logical(is.na(EV2015_predict$GDP)+is.na(EV2015_predict$thinness.5.9.years)+is.na(EV2015_predict$Schooling))]
+```
+
+Volvemos a tener datos faltantes en nuestro dataframe. Vamos a imputarlos de nuevo mediante  modelos. Comenzaremos imputando los datos para la variable GDP. Para construir el modelo volvemos a usar la función *step*, usando el dataframe de los datos ya imputados con la variable status, que creamos ahora, usando para ello todas las variables:
+
+```{r}
+EV2015_imp_na <- EV2015
+#Quitemos las variables con muchos NAs que no se puedan imputar, así como las variables que no tiene sentido que estén:
+variables <- names(EV2015_imp_na)
+print('Dataframe inicial:')
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_imp_na[,name])),'\n')
+}
+print('\t')
+
+#Igual que antes, quitamos estas variables:
+EV2015_imp_na$Adult.Mortality <- NULL
+EV2015_imp_na$Income.composition.of.resources <- NULL
+EV2015_imp_na$infant.deaths <- NULL
+EV2015_imp_na$under.five.deaths <- NULL
+
+#Quitamos las que tienen muchos NAs: Alcohol, Total.Expenditure y Population
+EV2015_imp_na$Alcohol <- NULL
+EV2015_imp_na$Total.expenditure <- NULL
+EV2015_imp_na$Population <- NULL
+
+#Comprobemos cuántos NAs tenemos ahora:
+print('Dataframe habiendo quitado ya las variables:')
+variables <- names(EV2015_imp_na)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_imp_na[,name])),'\n')
+}
+print(' \t')
+
+#Imputemos ahora los datos con las medianas en función de si el país es desarrollado o no, para así predecir:
+columns_with_na <- c('GDP','thinness.5.9.years','Schooling','thinness..1.19.years','BMI','Hepatitis.B')
+
+for (variable in columns_with_na){
+  for (i in 1:nrow(EV2015)){
+    if(is.na(EV2015[i,variable])){
+      if(EV2015[i,'Status']=='Developing'){
+        EV2015_imp_na[i,variable]= median(EV2015[,variable][EV2015_imp_na$Status=='Developing'],na.rm = T)
+      }else{
+        EV2015_imp_na[i,variable]= median(EV2015[,variable][EV2015_imp_na$Status=='Developed'],na.rm = T)
+      }
+    }
+  }
+}
+
+#Comprobemos que ya no hay NAs:
+print('Dataframe habiendo imputado con las medianas:')
+variables <- names(EV2015_imp_na)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_imp_na[,name])),'\n')
+}
+print(' \n')
+```
+
+Una vez hecho esto, hagamos la imputación, comenzando por GDP:
+```{r}
+ajuste_GDP <- lm(GDP ~.-Country, data=EV2015_imp_na)
+reg_GDP<- step(ajuste_GDP,direction = 'both')
+```
+
+Obtenemos que el ajuste que reduce al máximo el AIC con la función *step* es:
+
+GDP ~ Status + Hepatitis.B + BMI + Diphtheria + Schooling
+
+Veamos si las variables son significativas:
+
+```{r}
+reg_GDP <- lm(GDP ~ Status + Hepatitis.B + BMI + Diphtheria + Schooling,data = EV2015_imp_na)
+summary(reg_GDP)
+```
+
+Aunque no todas las que variables son significativas, tenemos que el R² que obtenemos es bajísimo, lo que implica que no podemos imputar con este ajuste. Así, ahora eliminamos los datos faltantes de GDP en el data frame empleado para predecir:
+
+```{r}
+library(tidyr)
+GDP_vacio <- is.na(EV2015_predict$GDP)
+EV2015_predict <- EV2015_predict %>% drop_na(GDP)
+EV2015_imp_na2 <- EV2015_imp_na[!GDP_vacio,]
+
+#Comprobemos que ya no hay datos NA en GDP:
+variables <- names(EV2015_predict)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict[,name])),'\n')
+}
+
+```
+
+Pasemos ahora a imputar los datos de Schooling:
+
+```{r}
+ajuste_sch <- lm(Schooling ~.-Country, data=EV2015_imp_na2)
+reg_sch<- step(ajuste_sch,direction = 'both')
+```
+
+Obtenemos que el ajuste que reduce al máximo el AIC con la función *step* es:
+
+Schooling ~ Status + BMI + Diphtheria + HIV.AIDS + GDP + thinness..1.19.years
+
+Veamos si las variables son significativas:
+
+```{r}
+reg_sch <- lm(Schooling ~ Status + BMI + Diphtheria + HIV.AIDS + GDP + thinness..1.19.years,data = EV2015_imp_na2)
+summary(reg_sch)
+```
+
+Todas son son significativas. Así, ahora predeciremos los datos faltantes de Schooling con este ajuste:
+
+```{r}
+PREDICT_sch <- select(EV2015_imp_na2,BMI,Diphtheria,Status,HIV.AIDS,GDP,thinness..1.19.years  )
+sch_prediccion <- predict(reg_sch,newdata=PREDICT_sch,interval='prediction')
+#sch_prediccion
+```
+
+Introduzcamos ahora las predicciones en los datos faltantes de nuestro dataframe:
+
+```{r}
+#Creamos un vector de predicciones
+predicciones_sch <- c()
+for(i in 1:nrow(sch_prediccion)){
+  predicciones_sch[i] <- sch_prediccion[i]
+}
+
+#Creamos el vector de GDP
+sch <- EV2015_predict$Schooling
+
+#Obtenemos las posiciones donde están los NA
+posiciones_na <- c()
+for (i in 1:length(sch)){
+  if(is.na(sch[i])){
+      posiciones_na <- c(posiciones_na,i)
+    }
+}
+
+#Sustituimos los vectores en estas posiciones en GDP
+for (posicion in posiciones_na){
+  sch[posicion] <- predicciones_sch[posicion]
+}
+
+#Comprobamos que ya no hay NAs
+sum(is.na(sch))
+
+EV2015_predict$Schooling <- sch
+```
+
+Veamos cuántos datos faltantes tenemos aún en nuestro dataframe.
+
+```{r}
+variables <- names(EV2015_predict)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict[,name])),'\n')
+}
+```
+
+Aún nos queda una sola variable con datos faltantes, pero, como solo son dos, en lugar de imputar creando un modelo lineal vamos a imputarlo utilizando la variable Status:
+
+```{r}
+EV2015_predict$thinness.5.9.years <- EV2015_imp_na2$thinness.5.9.years
+
+#Comprobemos que ya no hay ningún dato faltante:
+variables <- names(EV2015_predict)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict[,name])),'\n')
+}
+```
+
+
+Ya no tenemos ningún dato faltante NA en nuestro dataframe. Vamos a quitar de nuestro dataframe las variables Country y Status, las cuales las habíamos dejado para ver qué países tenían datos faltantes y para poder imputar con respecto a alguna otra variable, respectivamente, y vamos a predecir:
+
+```{r}
+countries <- EV2015_predict$Country
+EV2015_predict$Country <- NULL
+EV2015_predict$Status <- NULL
+```
+
+Para predecir en este caso usaremos el modelo sin variables polinómicas; en el siguiente apartado veremos cuál es mejor.
+
+```{r}
+prediccion <- predict(reg2,newdata=EV2015_predict,interval='prediction')
+
+cat('País','\t\t fit',' \t     lwr', ' \t    upr','\n')
+for (i in 1:length(countries)){
+  cat(countries[i],':',prediccion[i,1],'\t',prediccion[i,2],'\t',prediccion[i,3],'\t \n')
+}
+```
+
+### Predicción para el Kaggle
+
+#### Predicción usando valores imputados con otras variables
+
+Vayamos ahora a la parte del Kaggle. Nosotros hemos hecho la predicción para 154 países puesto que a la hora de imputar los datos de GDP recordemos que hemos decidido eliminar los datos faltantes puesto que el mejor modelo obtenido con step para esta variable tenía un R² muy bajo, y, por tanto, no es muy explicativo. No obstante, para probar el Kaggle y obtener un error nos pide que  hagamos la predicción para los 183 países del dataframe. De este modo, en primer lugar lo que vamos a hacer es ver el error que obtenemos si predecimos con los valores faltantes imputados con las medianas.
+
+
+```{r}
+prediccion2 <- predict(reg2,newdata=EV2015_imp_na,interval='prediction')
+```
+
+Guardamos ahora el resultado de nuestra predicción en el archivo:
+
+```{r}
+prediccion_columna <- prediccion2[1:183,1]
+write.csv(prediccion_columna,"/home/javier/Ciencia_de_Datos/Primer_cuatri/Análisis_exploratorio_datos/Modelos_lineales/Entregable2/prediccion.csv",row.names = FALSE) 
+```
+
+Con estos valores obtenemos un RMSE de 4.028669 años. Veamos ahora qué ocurre si, a pesar de haber obtenido un modelo malo para GDP, imputamos estos valores con este modelo.
+
+#### Predicción usando valores imputados con modelos
+
+Creamos en primer lugar un nuevo dataframe sobre el que imputar los datos:
+
+```{r}
+variables <- c('Diphtheria','HIV.AIDS','GDP','thinness.5.9.years','Schooling','Country','Status')
+#la variable country la dejamos para ver los países donde tenemos datos faltantes pero luego la eliminaremos
+
+EV2015_predict2 <- EV2015
+names <- names(EV2015_predict2)
+
+#quitamos las variables del vector de nombres a eliminar
+variables_to_delete <- names[!grepl(paste0(variables, collapse = "|"), names)]
+
+for (variable in variables_to_delete){
+  EV2015_predict2[,variable] <- NULL
+}
+
+#Comprobemos que están correctamente borradas:
+names(EV2015_predict2)
+
+#Veamos cuántos datos faltantes tenemos:
+
+variables <- names(EV2015_predict2)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict2[,name])),'\n')
+}
+
+```
+
+Comencemos imputando los datos de GDP, usando el modelo poco significativo visto antes:
+```{r}
+reg_GDP <- lm(GDP ~ Status + Hepatitis.B + BMI + Diphtheria + Schooling,data = EV2015_imp_na)
+PREDICT_gdp2 <- select(EV2015_imp_na,Status,Hepatitis.B,BMI,Diphtheria,Schooling)
+gdp_prediccion2 <- predict(reg_GDP,newdata=PREDICT_gdp2,interval='prediction')
+```
+
+Introduzcamos ahora las predicciones en los datos faltantes de nuestro dataframe:
+
+```{r}
+#Creamos un vector de predicciones
+predicciones_gdp <- c()
+for(i in 1:nrow(gdp_prediccion2)){
+  predicciones_gdp[i] <- gdp_prediccion2[i]
+}
+
+#Creamos el vector de GDP
+gdp <- EV2015_predict2$GDP
+
+#Obtenemos las posiciones donde están los NA
+posiciones_na <- c()
+for (i in 1:length(gdp)){
+  if(is.na(gdp[i])){
+      posiciones_na <- c(posiciones_na,i)
+    }
+}
+
+#Sustituimos los vectores en estas posiciones en GDP
+for (posicion in posiciones_na){
+  gdp[posicion] <- predicciones_gdp[posicion]
+}
+
+#Comprobamos que ya no hay NAs
+sum(is.na(gdp))
+
+EV2015_predict2$GDP <- gdp
+```
+
+Veamos ahora cuantos datos faltantes tenemos:
+
+```{r}
+variables <- names(EV2015_predict2)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict2[,name])),'\n')
+}
+```
+
+Sólo tenemos los datos faltantes de thinness.5.9.years y de Schooling. Imputemos ahora los datos de Schooling, usando el mismo ajuste que obteníamos antes:
+
+Schooling ~  Status + Diphtheria + HIV.AIDS + GDP + thinness.5.9.years
+
+Veamos si las variables son significativas:
+
+```{r}
+reg_sch <- lm(Schooling ~ Status + BMI + Diphtheria + HIV.AIDS + GDP + thinness..1.19.years,data = EV2015_imp_na)
+summary(reg_sch)
+```
+
+Todas son son significativas. Así, ahora predeciremos los datos faltantes de Schooling con este ajuste:
+
+```{r}
+PREDICT_sch <- select(EV2015_imp_na,BMI,Diphtheria,Status,HIV.AIDS,GDP,thinness..1.19.years  )
+sch_prediccion <- predict(reg_sch,newdata=PREDICT_sch,interval='prediction')
+#sch_prediccion
+```
+
+Introduzcamos ahora las predicciones en los datos faltantes de nuestro dataframe:
+
+```{r}
+#Creamos un vector de predicciones
+predicciones_sch <- c()
+for(i in 1:nrow(sch_prediccion)){
+  predicciones_sch[i] <- sch_prediccion[i]
+}
+
+#Creamos el vector de GDP
+sch <- EV2015_predict2$Schooling
+
+#Obtenemos las posiciones donde están los NA
+posiciones_na <- c()
+for (i in 1:length(sch)){
+  if(is.na(sch[i])){
+      posiciones_na <- c(posiciones_na,i)
+    }
+}
+
+#Sustituimos los vectores en estas posiciones en GDP
+for (posicion in posiciones_na){
+  sch[posicion] <- predicciones_sch[posicion]
+}
+
+#Comprobamos que ya no hay NAs
+sum(is.na(sch))
+
+EV2015_predict2$Schooling <- sch
+```
+
+Comprobemos si ya no hay valores faltantes en Schooling:
+
+```{r}
+variables <- names(EV2015_predict2)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict2[,name])),'\n')
+}
+```
+No los hay.Imputemos en último lugar thinness.5.9.years. Como solo son dos, en lugar de imputar creando un modelo lineal vamos a imputarlo utilizando la variable Status:
+
+```{r}
+EV2015_predict2$thinness.5.9.years <- EV2015_imp_na$thinness.5.9.years
+
+#Comprobemos que ya no hay ningún dato faltante:
+variables <- names(EV2015_predict)
+for (name in variables){
+  cat('Número de NAs en variable',name,':',sum(is.na(EV2015_predict[,name])),'\n')
+}
+```
+
+Ya no quedan variables con NAs en nuestro dataframe, por lo que ya podemos predecir con él. Usamos en primer lugar el modelo sin términos polinómicss:
+
+```{r}
+prediccion3 <- predict(reg2,newdata=EV2015_predict2,interval='prediction')
+```
+
+Guardamos ahora el resultado de nuestra predicción en el archivo:
+
+```{r}
+prediccion_columna <- prediccion3[1:183,1]
+write.csv(prediccion_columna,"/home/javier/Ciencia_de_Datos/Primer_cuatri/Análisis_exploratorio_datos/Modelos_lineales/Entregable2/prediccion3.csv",row.names = FALSE) 
+```
+
+Con estos valores obtenemos un RMSE de 3.895803 años, lo cual reduce el valor anterior. Así, esta es la predicción que hemos decidido subir al Kaggle, a pesar de que, en él, hemos imputado el valor de GDP con un modelo poco explicativo. No obstante, a pesar de ser poco explicativo, parece que funciona bien puesto que nos reduce el RMSE. Veamos ahora lo que obtenemos usando el modelo con términos polinómicos:
+
+```{r}
+prediccion4 <- predict(reg_poly2,newdata=EV2015_imp_na,interval='prediction')
+```
+
+```{r}
+prediccion_columna <- prediccion4[1:183,1]
+write.csv(prediccion_columna,"/home/javier/Ciencia_de_Datos/Primer_cuatri/Análisis_exploratorio_datos/Modelos_lineales/Entregable2/prediccion4.csv",row.names = FALSE)
+```
+Con estos valores obtenemos un RMSE de 124.2159 años, lo cual aumenta en gran medida el valor anterior.  Es obvio que estamos en un caso de sobreentrenamiento del modelo, y, por tanto, decidimos quedarnos con el modelo lineal.
+
+
+
+# Parte 2
+
+Se quieren probar los modelos:
+modAL1<-lm(Life.expectancy ~ Alcohol, data=EV2014, na.action=na.exclude)
+modAL2<-lm(Life.expectancy ~ Alcohol*Status, data=EV2014, na.action=na.exclude)
+
+Esto se hace para responder a la pregunta de si tiene la esperanza de vida una relación positiva significativa con el consumo de alcohol. También se quiere comprobar si es igual en los paises en desarrollo que en los países desarrollados. Para responder a estas preguntas trabajaremos en los modelos explicativos convenientes, teniendo en cuenta la posible confusión. 
+
+Carguemos los datos desde 0 para evitar posibles cambios (no debería haber) que hayan en el dataframe original:
+
+```{r}
+load(file='./Datos/EV2014.RData')
+EV2014$Status <- as.factor(EV2014$Status)
+```
+
+Probemos los modelos:
+
+```{r}
+modAL1<-lm(Life.expectancy ~ Alcohol, data=EV2014, na.action=na.exclude)
+
+modAL2<-lm(Life.expectancy ~ Alcohol*Status, data=EV2014, na.action=na.exclude)
+```
+
+Recordemos que la variable Alcohol nos venía a decir el consumo de alcohol per cápita (mayores de 15 años), en litros de alcohol puro.
+
+## Primer enfoque del problema
+Una vez comentado esto, veamos el summary del primer modelo:
+
+```{r}
+summary(modAL1)
+```
+
+Respondiendo a la primera pregunta de si tiene la esperanza de vida una relación positiva significativa con el consumo de alcohol, como vemos en el primer ajuste tenemos que sí que hay una relación positiva de ambas variables. Además, la variable Alcohol tiene un p-valor muy pequeño, lo que indica que la variable es significativa. A primera vista el hecho de que la esperanza de vida, según el ajuste, aumente con el consumo de alcohol nos extraña, puesto que el consumo de alcohol, como es bien sabido, no es beneficioso para el cuerpo; de hecho, con el tiempo, el consumo excesivo de alcohol puede causar enfermedades crónicas y otros serios problemas como los siguientes: alta presión arterial, enfermedad cardiaca, accidentes cerebrovasculares, enfermedad del hígado y problemas digestivos, múltiples tipos de cánceres diferentes, problemas de salud mental, etc. (*Center for Disease Control and Prevention, CDC*)
+
+ No obstante, en este modelo no se están teniendo en cuenta las variables confusoras. Luego veremos esto. Veamos la representación gráfica:
+
+```{r}
+plot(EV2014$Alcohol, EV2014$Life.expectancy, main='Ajustes no teniendo en cuenta el status',cex.main=1)
+abline(coef = coef(modAL1),col='red')
+legend(x = "topleft", legend = c('Ajuste'), lty= c(1),col = c('red'), cex=0.75) 
+```
+
+Observamos que hay una gran cantidad de puntos con valor prácticamente nulo de consumo de Alcohol. No obstante, en este caso no hemos considerado el efecto del Status del país en el ajuste. Comprobemos qué obtenemos si tenemos el cuenta el status para así responder a la pregunta de si es igual en los paises en desarrollo que en los países desarrollados:
+
+```{r}
+summary(modAL2)
+```
+Ahora obtenemos que la variable Alcohol ya no es significativa, mientras que el producto de Alcohol con el Status sí que lo es. Esto lo interpretamos recomponiendo la predicción a partir de la fórmula, sabiendo que tenemos una relación diferente para países desarrollados que para países en desarrollo. Tendremos lo siguiente:
+
+$$Life.expectancy = 0.08·Alcohol-13.26·Developing +0.92*Alcohol*Developing$$
+
+
+Donde $Alcohol$ es la variable que indica el Alcohol que se toma en cada país y $Developing$ es una variable binaria que toma el valor 1 si el país está en desarrollo y 0 si ya está desarrollado. De este modo, en función de si tenemos que el país está desarrollado o no, tenemos que nuestro ajuste tendrá una pendiente u otra (concretamente, 0.08 si está desarrollado y 1 si está en desarrollo). 
+
+Veámoslo gráficamente:
+```{r}
+desarrollados <- subset(EV2014, Status=='Developed')
+en_desarrollo <- subset(EV2014, Status=='Developing')
+
+modAl_desarrollados <- lm(Life.expectancy ~ Alcohol, data=desarrollados, na.action=na.exclude)
+modAl_en_desarrollo <- lm(Life.expectancy ~ Alcohol, data=en_desarrollo, na.action=na.exclude)
+
+plot(EV2014$Alcohol, EV2014$Life.expectancy, main='Ajustes teniendo en cuenta el status',cex.main=1,col='red')
+points(en_desarrollo$Alcohol,en_desarrollo$Life.expectancy,col='blue')
+abline(coef=coef(modAl_desarrollados), col='RED')
+abline(coef=coef(modAl_en_desarrollo), col='BLUE')
+legend(x = "bottomright", legend = c('Desarrollados','En desarrollo'), lty= c(1,1),col = c('red','blue'), cex=0.75) 
+```
+
+
+Como ya hemos comentado antes, el ajuste es muy diferente en función de si tenemos países desarrollados o en desarrollo. Concluimos por tanto que la relación entre la esperanza de vida y el consumo de alcohol es diferente en función de si consideramos países de diferentes status. 
+
+## Búsqueda de posibles confusores
+
+Vamos a ver ahora lo que ocurre para el resto de variables, para comprobar si estas son confusoras o no:
+
+```{r}
+variables <- names(EV2014)
+variables
+```
+
+
+Al igual que en el ejercicio 1, comprobaremos si son variables confusoras todas las variables a excepción de las siguientes: el año (Year), puesto que este es 2014 para todas las muestras ya que indica el año en el que están tomados los datos; el nombre de los países (Country), puesto que obviamente el cómo se llame cada país no va a afectar a la esperanza de vida de este;  el índice de desarrollo humano en términos de las fuentes de composición de los ingresos (Income.composition.of.resources), puesto que este está compuesto, entre otros, por la esperanza de vida, por lo que si lo usásemos para modelizar estaríamos ajustando con un predictor que ya sabe lo que se quiere predecir. Además de estas variables quitamos de nuestro ajuste a las variables Adult.Mortality e infant.deaths, puesto que, si en nuestro ajuste en el que queremos calcular la esperanza de vida introducimos la mortalidad tanto de niños como de adultos, estamos diciendo al ajuste directamente la edad a la que se muere la población, y con ello se puede calcular la esperanza de vida.
+
+Quitemos estas variables de nuestro ajuste, dejando la del país para tener claro a qué país nos estamos refiriendo:
+
+```{r}
+EV2014$Country <- NULL
+EV2014$Year <- NULL
+EV2014$Adult.Mortality<- NULL
+EV2014$infant.deaths <- NULL
+EV2014$Income.composition.of.resources <- NULL
+
+#Veamos ahora las variables que nos quedan:
+variables <- names(EV2014)
+variables
+```
+Una vez visto esto, nos planteamos de nuevo qué hacer con los datos faltantes, y concluimos que, viendo lo que ocurría en el ejercicio 1, lo mejor sería imputar los datos NA mediante modelos. No obstante, puesto que en los modelos dados en el enunciado los valores faltantes se excluyen, decidimos sencillamente no imputarlos. 
+
+Una vez hecho esto vamos a construir un modelo con la variable Alcohol que se vaya modificando con las variables confusoras. Para saber si una variable es confusora o no usaremos el criterio de si añadiéndola al ajuste ya modificado por las anteriores variables que ya han sido determinadas como confusoras el coeficiente de la pendiente de Alcohol cambia en más de un 10 %. Si es el caso, añadiremos esa variable a nuestro ajuste. Vamos a quitar del vector de posibles variables confusoras a Life.Expectancy, que es la variable que estamos prediciendo, Alcohol, que es la que queremos ver si existe influencia de otras variables, y Status, que ya hemos visto que sí que provoca confusión. 
+
+```{r}
+variables_a_eliminar <- c('Status','Life.expectancy','Alcohol')
+posibles_confusores <- variables[!grepl(paste0(variables_a_eliminar, collapse = "|"), variables)]
+posibles_confusores
+```
+
+Hagamos un bucle donde iremos actualizando el ajuste con las variables confusoras, como hemos comentado antes:
+
+```{r}
+#Partimos del modelo modAL2:
+modAL2<-lm(Life.expectancy ~ Alcohol*Status, data=EV2014, na.action=na.exclude)
+
+variables_confusoras <- c()
+
+for (posible_confusor in posibles_confusores){
+  #guardamos el valor de la pendiente de Alcohol al inicio de cada iteración en el modelo que ya tenemos
+  pte_Alcohol_modAL2 <- coef(summary(modAL2))["Alcohol","Estimate"]
+  
+  #inicializamos el valor en cada iteración del bucle y hacemos un nuevo ajuste con el nuevo posible confusor
+  formula <- as.formula(paste('~.+',posible_confusor))#hacemos esto porque si no nos da error
+  updated_model <- update(modAL2,formula,data=EV2014, na.action=na.exclude)
+  #guardamos el valor de la nueva pendiente de Alcohol con el nuevo modelo
+  nueva_pte_Alcohol <- coef(summary(updated_model))["Alcohol","Estimate"]
+  
+  
+  #Vemos si la pendiente cambia más de un 10%:
+  if (abs(nueva_pte_Alcohol-pte_Alcohol_modAL2)/pte_Alcohol_modAL2 >= 0.1){
+    modAL2 <- update(modAL2,formula, data=EV2014, na.action=na.exclude)
+    variables_confusoras <- c(variables_confusoras,posible_confusor)
+  }
+}
+
+#Veamos cuales son las variables confusoras:
+variables_confusoras
+```
+
+Esta forma de hacerlo nos da que sólo hay un posible confusor, el cual es percentage.expenditure, que, por casualidad (o no) es la primera variable que comprobamos. Para ver si la presencia de otra variable en el modelo camufla la confusión que introducen los otros posibles confusores cambiemos el orden de los confusores que entran al bucle y veamos qué ocurre.
+
+```{r}
+#ordenémoslos alfabéticamente:
+posibles_confusores <- sort(posibles_confusores)
+#Ahora el primer elemento es BMI:
+posibles_confusores
+
+#Partimos del modelo modAL2:
+modAL2<-lm(Life.expectancy ~ Alcohol*Status, data=EV2014, na.action=na.exclude)
+
+variables_confusoras <- c()
+
+for (posible_confusor in posibles_confusores){
+  #guardamos el valor de la pendiente de Alcohol al inicio de cada iteración en el modelo que ya tenemos
+  pte_Alcohol_modAL2 <- coef(summary(modAL2))["Alcohol","Estimate"]
+  
+  #inicializamos el valor en cada iteración del bucle y hacemos un nuevo ajuste con el nuevo posible confusor
+  formula <- as.formula(paste('~.+',posible_confusor))#hacemos esto porque si no nos da error
+  updated_model <- update(modAL2,formula,data=EV2014, na.action=na.exclude)
+  #guardamos el valor de la nueva pendiente de Alcohol con el nuevo modelo
+  nueva_pte_Alcohol <- coef(summary(updated_model))["Alcohol","Estimate"]
+  
+  
+  #Vemos si la pendiente cambia más de un 10%:
+  if (abs(nueva_pte_Alcohol-pte_Alcohol_modAL2)/pte_Alcohol_modAL2 >= 0.1){
+    modAL2 <- update(modAL2,formula, data=EV2014, na.action=na.exclude)
+    variables_confusoras <- c(variables_confusoras,posible_confusor)
+  }
+}
+
+#Veamos cuales son las variables confusoras:
+variables_confusoras
+```
+
+Volvemos a obtener que el primer elemento queda como el único confusor, opacando al resto. Esto nos hace intuir que ver los posibles confusores actualizando el modelo uno a uno puede ocultar las confusiones producidas después de introducir en el modelo las variables que ya hemos comprobado que son confusoras. Por tanto, decidimos hacerlo una a una:
+
+```{r}
+#Partimos del modelo modAL2:
+modAL2<-lm(Life.expectancy ~ Alcohol*Status, data=EV2014, na.action=na.exclude)
+
+variables_confusoras <- c()
+#guardamos el valor de la pendiente de Alcohol sin confusores (solo con status)
+pte_Alcohol_modAL2 <- coef(summary(modAL2))["Alcohol","Estimate"]
+
+for (posible_confusor in posibles_confusores){
+  #inicializamos el valor en cada iteración del bucle y hacemos un nuevo ajuste con el nuevo posible confusor
+  formula <- as.formula(paste('~.+',posible_confusor))#hacemos esto porque si no nos da error
+  updated_model <- update(modAL2,formula,data=EV2014, na.action=na.exclude)
+  #guardamos el valor de la nueva pendiente de Alcohol con el nuevo modelo
+  nueva_pte_Alcohol <- coef(summary(updated_model))["Alcohol","Estimate"]
+  
+  #Vemos si la pendiente cambia más de un 10%:
+  if (abs(nueva_pte_Alcohol-pte_Alcohol_modAL2)/pte_Alcohol_modAL2 >= 0.1){
+    variables_confusoras <- c(variables_confusoras,posible_confusor)
+  }
+}
+
+#Veamos cuales son las variables confusoras:
+variables_confusoras
+```
+
+Obtenemos que las siguientes variables son los posibles confusores. Construyamos ahora el modelo y depurémoslo:
+
+## Construcción y evaluación del ajuste
+
+```{r}
+modelo_con_confusores <- modAL2
+for (confusor in variables_confusoras){
+  formula <- as.formula(paste('~.+',confusor))#hacemos esto porque si no nos da error
+  modelo_con_confusores <- update(modelo_con_confusores,formula)
+}
+
+summary(modelo_con_confusores)
+```
+
+Hay variables que no son significativas, pero como son variables confusoras para Alcohol las mantenemos. Depuremos el modelo, viendo, antes que nada, la posible colinealidad existente entre las variables. Para ello, como antes ya hemos hecho, usamos el factor de inflación de la varianza (VIF), el cual nos indica la colinealidad, siendo preocupante si el valor de esta variable supera un valor de 10:
+
+```{r}
+vif(modelo_con_confusores)
+```
+
+Vemos que tanto GDP como percentage.expenditure tienen un valor muy alto del factor de inflación de la varianza, superando el límite de 10, por lo que lo quitamos de nuestro modelo.
+
+```{r}
+modelo_con_confusores <- update(modelo_con_confusores,~.-GDP -percentage.expenditure)
+#summary(modelo_con_confusores)
+
+#Comprobamos si el ya no hay colinealidad
+vif(modelo_con_confusores)
+```
+Ya no hay colinealidad en nuestro modelo. Una vez hecho esto, pasemos a analizar los puntos influyentes.
+
+```{r}
+par(mfrow=c(2,2))
+plot(modelo_con_confusores)
+```
+Aparentemente tenemos varios puntos influyentes. Veamos en concreto los puntos influyentes en el eje y usando el leverage:
+
+```{r,fig.width=5,fig.height=4}
+n<-nrow(EV2014)
+p <- length(coef(modelo_con_confusores))
+plot(fitted(modelo_con_confusores),hatvalues(modelo_con_confusores),main="leverages vs fitted",ylim=c(min(hatvalues(modelo_con_confusores)),3*p/n)) 
+abline(h=2*p/n,col="blue",lwd=1);  
+abline(h=3*p/n,col="red",lwd=3);
+```
+Como vemos, sí existen algunos valores de leverage bastante altos, lo que implica la presencia de puntos significativos. Si ahora analizamos la existencia de puntos influyentes en el eje x con la distancia de Cook, obtenemos la siguiente figura:
+
+```{r,fig.width=5,fig.height=4}
+plot(fitted(modelo_con_confusores),cooks.distance(modelo_con_confusores),main="Distancia de Cook vs fitted")
+abline(h=1,col="red",lwd=1);
+```
+Observamos que no hay ningún valor que sobrepase el nivel crítico establecido de 1, aunque, no obstante, tenemos un punto que está en torno a 0.5, lo cual es un valor muy alto. Veamos ahora un gráfico de bolas de la influencia utilizando las funciones del paquete car, así como una tabla que nos indica el valor de los leverages y de la distancia de Cook para los puntos más influyentes:
+
+```{r,fig.width=5,fig.height=4}
+influencePlot(modelo_con_confusores) 
+summary(influence.measures(modelo_con_confusores)) 
+```
+Una vez visto los posibles puntos confusores, volvemos a usar el criterio de que ningún punto puede tener un valor de leverage mayor que 0.2 y ningún valor de distancia de Cook mayor que 0.08. 
+
+```{r}
+influyentes <- c(which(hatvalues(modelo_con_confusores)>0.2 | cooks.distance(modelo_con_confusores) > 0.08))
+influyentes <- as.numeric(names(influyentes))
+influyentes <- c(influyentes,1636)
+#influyentes <- c(influyentes,1636,1604,1620,1977,1623,1653,1669,1685,1718,1734,1750,2121)
+length(influyentes)
+influyentes
+EV2014_1 <- EV2014[setdiff(row.names(EV2014),influyentes),]
+modelo_con_confusores2 <- update(modelo_con_confusores,data=EV2014_1)
+
+```
+Hemos quitado tan solo 7 puntos influyentes que no cumplían nuestro criterio, lo cual representa un 3.8% de los datos iniciales. Una vez vista la influencia, volvemos a ver la colinealidad entre las variables, para comprobar que tras quitar los puntos influyentes sigue sin haber. 
+
+```{r}
+vif(modelo_con_confusores2)
+```
+
+
+Viendo el bajo valor del factor de inflación de la varianza (VIF) de nuestras variables (no hay ninguna por encima de 10, que es el valor crítico), asumimos que no hay colinealidad entre ellas. 
+
+Veamos ahora si nuestros datos son heterocedásticos usando para ello la función *bptest* del paquete *lmtest*. Recordemos que esta función realiza un test de Breusch-Pagan test para comprobar si hay heterocedasticidad; si obtenemos un p-valor menor que $\alpha$=0.05, esto significa que nuestro ajuste no es homocedástico (que es la hipótesis nula). Veámoslo:
+
+```{r}
+bptest(modelo_con_confusores2)
+```
+Obtenemos un p-valor de 0.06, lo que nos dice que tenemos homocedasticidad. 
+
+Una vez visto esto pasamos a ver si nuestros datos presentan normalidad o no. Para ello, como antes, usamos, por un lado, la función *qqnorm* de la librería *stats*, y por otro lado, la función *shapiro.test* de la librería *stats*. Veámos si tenemos normalidad o no:
+
+```{r}
+res_stu<-rstudent(modelo_con_confusores2) 
+qqnorm(res_stu)
+qqline(res_stu,col="red")
+
+#test de normalidad
+shapiro.test(res_stu)
+```
+Como podemos ver tanto en la gráfica qqplot como en el p-valor, nuestro ajuste sí que presenta normalidad. 
+
+Veamos en último lugar si nuestro ajuste tiene linealidad:
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+res_stu<-rstudent(modelo_con_confusores2) 
+  ggplot(data = EV2014_1, aes(x =fitted(modelo_con_confusores2), y = res_stu)) + 
+  geom_point() + geom_smooth(color = "coral",span=0.95) + geom_hline(yintercept = 0) +
+  labs(y = "residuos studentizados",
+       x = "valores ajustados") +
+  theme_bw()
+```
+
+
+Vemos que obtenemos un ajuste que es lineal en todas las zonas salvo al final de los valores ajustados. No obstante, consideramos que hemos obtenido un buen valor de linealidad. 
+
+## Conclusiones
+
+Una vez ya hemos evaluado el modelo, hemos obtenido que este no tiene ya puntos influyentes ni colinealidad, además de que es homocedástico, tiene normalidad y linealidad. Por tanto, es un buen modelo. Así pues, estamos satisfechos con el modelo conseguido, en el que tenemos resumidas todas las variables confusoras del alcohol (a pesar de que algunas no sean significativas, como ya hemos comentado antes).
+
+Respondamos a la pregunta de si tiene la esperanza de vida una relación positiva significativa con el consumo de alcohol, ahora que tenemos, además de la variable Alcohol, sus variables confusoras.
+
+```{r}
+summary(modelo_con_confusores2)
+```
+Como vemos, en nuestro modelo la relación de la esperanza de vida con el Alcohol no es negativa, aunque la pendiente de esta variable se ha reducido bastante a como era antes, siendo ahora practicamente nula. Esto, junto con el p-valor que tiene la variable alcohol, bastante superior a 0.05, nos viene a decir que no es una variable significativa, por lo que podemos decir que no influye a la hora de modelizar la esperanza de vida. Viendo este ejercicio nos queda claro de la importancia de, siempre que se hace un ajuste con cualquier variable, tener en cuenta las posibles variables confusoras de esta variable.
