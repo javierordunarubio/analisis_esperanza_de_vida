@@ -2,6 +2,8 @@
 
 **Lenguaje de programación empleado: R.**
 
+En la carpeta build se tiene el RMarkdown con todos los comentarios y un archivo .html creado para visualizar más fácilmente este RMarkdown generado.
+
 En este repositorio se plantea un problema de predicción de la esperanza de vida en los diferentes países del mundo en base a una serie de variables, donde para abordarlo se utilizan una serie de modelos multilineales. El problema consta de dos partes: la primera parte consiste básicamente en un análisis exploratorio de los datos, para posteriormente pasar a realizar una serie de modelos multilineales empleando estos mismos datos. La segunda parte consiste en la realización de un análisis para buscar si existe una relación entre la esperanza de vida y el consumo de alcohol.
 
 Los datos empleados provienen del repositorio de datos del Observatorio Mundial de la Salud de la OMS. En nuestro estudio sólo trabajaremos con el fichero completo del año 2014 (EV2014.RData) y los predictores del año 2015 (EV2015.RData). Las variables de estos datos son un conjunto de indicadores sociales y de salud de los diferentes países recogidos. Estas variables son:
