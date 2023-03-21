@@ -5,8 +5,8 @@
 En este repositorio se plantea un problema de predicción de la esperanza de vida en los diferentes países del mundo en base a una serie de variables, donde para abordarlo se utilizan una serie de modelos multilineales. El problema consta de dos partes: la primera parte consiste básicamente en un análisis exploratorio de los datos, para posteriormente pasar a realizar una serie de modelos multilineales empleando estos mismos datos. La segunda parte consiste en la realización de un análisis para buscar si existe una relación entre la esperanza de vida y el consumo de alcohol.
 
 Los datos empleados provienen del repositorio de datos del Observatorio Mundial de la Salud de la OMS. En nuestro estudio sólo trabajaremos con el fichero completo del año 2014 (EV2014.RData) y los predictores del año 2015 (EV2015.RData). Las variables de estos datos son un conjunto de indicadores sociales y de salud de los diferentes países recogidos. Estas variables son:
-*Country: Variable de texto, indicando el nombre del país
-*Year: Constante igual a 2014 en la primera base, constante igual a 2015 en la segunda base.
+* Country: Variable de texto, indicando el nombre del país
+* Year: Constante igual a 2014 en la primera base, constante igual a 2015 en la segunda base.
 *Life Expectancy: Esperanza de vida al nacer en años, ausente en la base para 2015.
 *Status: Estatus de país en desarrollo (Developing) o desarrollado (Developed),
 *Adult.Mortality: Tasa de mortalidad en adultos (15-65 años) por 1000 habitantes,
